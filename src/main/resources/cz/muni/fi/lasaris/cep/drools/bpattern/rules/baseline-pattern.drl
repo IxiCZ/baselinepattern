@@ -1,0 +1,123 @@
+package cz.muni.fi.lasaris.cep.drools.bpattern.rules
+
+import cz.muni.fi.lasaris.cep.drools.bpattern.domain.LoginEvent; // Java pojo
+import cz.muni.fi.lasaris.cep.drools.bpattern.domain.RepeatedLoginEvent; // Java pojo
+import cz.muni.fi.lasaris.cep.drools.bpattern.outcome.DistributedAttackReport;
+
+import java.util.Collection;
+
+global DistributedAttackReport daReport;
+
+// declaring events
+declare LoginEvent
+    @role(event)
+    @timestamp( occurenceTime )
+end
+
+declare RepeatedLoginEvent
+    @role(event)
+end
+
+declare RepeatedLoginReportedEvent
+    @role(event)
+    hostname: String
+    username: String 
+end
+
+declare DistributedAttackReportedEvent
+    @role(event)
+end
+
+
+// declaring facts - workaround around no group by in accumulates
+declare HostNameUserNameLE 
+    hostname: String
+    username: String 
+end
+
+
+// rules to workaround around no group by in accumulates
+rule "Insert HostNameUserNameLE fact if there is no such with the same hostname and username" 
+when 
+     LoginEvent($hostname : host, $username: user)
+     not (HostNameUserNameLE(hostname == $hostname, username == $username))
+then 
+	// System.out.println("New HostNameUserNameLE fact: " + $hostname + " " + $username);
+     insert(new HostNameUserNameLE($hostname, $username)); 
+end
+
+rule "Retract HostNameUserNameLE fact where there is no corresponding event" 
+when 
+	$toretract: HostNameUserNameLE($hostname : hostname, $username: username)
+    not LoginEvent(host == $hostname, user == $username)
+then 
+	// System.out.println("Retracting HostNameUserNameLE fact: "+ $hostname + " " + $username);
+     retract($toretract); 
+end
+
+
+//AND REPEATED_LOGIN=
+//select hostname, username,
+//	success, count(*) as attempts
+//from LoginEvent.win:time(60 sec)
+//where attempts > 1000, success=false
+//group by hostname, username
+
+rule "REPEATED_LOGIN"
+    when
+    	HostNameUserNameLE ($hostname: hostname, $username: username)
+	
+		not RepeatedLoginReportedEvent(hostname == $hostname, username == $username) over window:time(60s)
+     
+        accumulate( $r: LoginEvent( host == $hostname, user == $username, success == false) over window:time(60s);
+                $count: count($r); $count > 1000 )       
+    then
+        //System.out.println("REPEATED_LOGIN Inserting: hostname: " + $hostname + " username: " + $username);
+        insert(new RepeatedLoginEvent($hostname, $username, $count.intValue()));
+        insert(new RepeatedLoginReportedEvent($hostname, $username));
+end
+
+
+//select count(*) as hostsNumber
+//from OpakovanyLoginEvent.win:time(2 min)
+//where hostsNumber > 10
+//group by hostname
+
+rule "DISTRIBUTED_DICT_ATTACK"
+    when
+      $o: Collection(size > 5) from accumulate ($rle : RepeatedLoginEvent() over window:time(2m) 
+														      distributedAttack($rle))    
+	  not DistributedAttackReportedEvent() over window:time(2m)													      
+    then
+        insert(new DistributedAttackReportedEvent());
+        daReport.reportAttack($o);
+        //System.out.println("Size: " + $o.size() +  ", obj:" + $o);
+end
+
+
+/*
+// Testing rules
+
+rule "REPEATED_LOGIN count"
+    when
+        accumulate( $r: LoginEvent() over window:time( 60s ); $count: count($r) )       
+    then
+        System.out.println("count: " + $count );
+end
+
+rule "new Login Event" 
+when 
+     LoginEvent($occurenceTime: occurenceTime)
+then 
+	 System.out.println("New Login Event" +  $occurenceTime);
+end
+
+rule "test"
+    when
+        
+    then
+        System.out.println("Working.");
+end
+*/
+
+
